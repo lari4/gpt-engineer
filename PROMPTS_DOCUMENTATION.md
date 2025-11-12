@@ -255,3 +255,46 @@ Do not comment on what every file does. Please note that the code should be full
 ```
 
 ---
+
+## 3. ФИЛОСОФИЯ И BEST PRACTICES (Philosophy & Best Practices)
+
+### 3.1. Philosophy Prompt
+
+**Расположение:** `gpt_engineer/preprompts/philosophy`
+
+**Назначение:** Определяет стиль кодирования, best practices и предпочтения для различных языков программирования. Этот промпт добавляется в конец системных инструкций как "Useful to know" и влияет на общее качество генерируемого кода.
+
+**Используется в:**
+- `setup_sys_prompt()` - добавляется в конце как "Useful to know:\n" + philosophy
+- `setup_sys_prompt_existing_code()` - аналогично для режима улучшения
+- Применяется во ВСЕХ режимах генерации и улучшения кода
+
+**Особенности:**
+- Универсальные правила для всех языков
+- Специфичные рекомендации для Python
+- Акцент на структуру проекта и организацию кода
+- Требования к файлам зависимостей (requirements.txt, package.json)
+
+**Ключевые принципы:**
+- Разные классы в разных файлах
+- Комментарии для сложной логики
+- Использование pytest и dataclasses для Python
+- Следование best practices для структуры файлов
+
+**Промпт:**
+```
+Almost always put different classes in different files.
+Always use the programming language the user asks for.
+For Python, you always create an appropriate requirements.txt file.
+For NodeJS, you always create an appropriate package.json file.
+Always add a comment briefly describing the purpose of the function definition.
+Add comments explaining very complex bits of logic.
+Always follow the best practices for the requested languages for folder/file structure and how to package the project.
+
+
+Python toolbelt preferences:
+- pytest
+- dataclasses
+```
+
+---

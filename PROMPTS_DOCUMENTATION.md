@@ -366,3 +366,215 @@ Do not use placeholders, use example values (like . for a folder argument) if ne
 ```
 
 ---
+
+## 5. ДИНАМИЧЕСКИЕ RUNTIME ПРОМПТЫ (Dynamic Runtime Prompts)
+
+Эти промпты генерируются динамически во время выполнения программы в зависимости от контекста и состояния выполнения.
+
+### 5.1. Self-Healing Error Prompt
+
+**Расположение:** `gpt_engineer/tools/custom_steps.py:111-112`
+
+**Назначение:** Автоматически генерируется когда выполнение сгенерированного кода завершается с ошибкой. Отправляет stdout и stderr обратно в AI для исправления кода.
+
+**Используется в:**
+- `self_heal()` функция - автоматическое исправление ошибок выполнения
+- Цикл до `MAX_SELF_HEAL_ATTEMPTS` (10 попыток)
+
+**Контекст использования:**
+- Запускается после выполнения entrypoint скрипта
+- Срабатывает если return code != 0 и != 2
+- Использует `improve_fn()` для генерации исправлений
+
+**Шаблон промпта:**
+```python
+f"A program with this specification was requested:\n{prompt}\n, but running it produced the following output:\n{stdout_full}\n and the following errors:\n{stderr_full}. Please change it so that it fulfills the requirements."
+```
+
+---
+
+### 5.2. Diff Refinement Error Prompt
+
+**Расположение:** `gpt_engineer/core/default/steps.py:327-330`
+
+**Назначение:** Генерируется когда AI создал диффы, которые не соответствуют требуемому формату или код не найден в существующих файлах. Запрашивает переписать проблемные диффы.
+
+**Используется в:**
+- `_improve_loop()` - цикл улучшения кода с валидацией диффов
+- Максимум `MAX_EDIT_REFINEMENT_STEPS` попыток исправления
+
+**Контекст использования:**
+- После парсинга и валидации диффов от AI
+- Когда `salvage_correct_hunks()` возвращает ошибки
+- Повторяется до корректного формата или исчерпания попыток
+
+**Шаблон промпта:**
+```python
+"Some previously produced diffs were not on the requested format, or the code part was not found in the code. Details:\n"
++ "\n".join(errors)
++ "\n Only rewrite the problematic diffs, making sure that the failing ones are now on the correct format and can be found in the code. Make sure to not repeat past mistakes. \n"
+```
+
+---
+
+### 5.3. Clarification Flow Prompts
+
+**Расположение:** `gpt_engineer/tools/custom_steps.py:166-177`
+
+**Назначение:** Набор динамических промптов для управления потоком уточнения требований.
+
+**5.3.1. Assumption Prompt**
+
+Используется когда пользователь пропускает вопрос (нажимает "c" или Enter):
+
+```python
+"Make your own assumptions and state them explicitly before starting"
+```
+
+**5.3.2. Continuation Prompt**
+
+Добавляется после каждого ответа пользователя для продолжения диалога:
+
+```python
+"""
+\n\n
+Is anything else unclear? If yes, ask another question.\n
+Otherwise state: "Nothing to clarify"
+"""
+```
+
+**Используется в:**
+- `clarified_gen()` - интерактивная фаза уточнения
+
+**Логика работы:**
+1. AI задает вопрос из clarify промпта
+2. Пользователь отвечает или пропускает ("c" или Enter)
+3. Если пропустил → AI делает предположения
+4. Добавляется continuation prompt для следующего шага
+5. Цикл продолжается пока AI не скажет "Nothing to clarify"
+
+---
+
+### 5.4. Lite Generation System Prompt
+
+**Расположение:** `gpt_engineer/tools/custom_steps.py:228`
+
+**Назначение:** Упрощенный режим генерации без roadmap и philosophy, только с форматом файлов.
+
+**Используется в:**
+- `lite_gen()` - облегченная версия генерации кода
+- Пользовательский промпт используется как system message
+- file_format используется как user message
+
+**Особенность:**
+```python
+messages = ai.start(
+    prompt.to_langchain_content(),  # user prompt as system message
+    preprompts["file_format"],      # file_format as user message
+    step_name=curr_fn()
+)
+```
+
+Это инвертированная структура по сравнению с обычной генерацией!
+
+---
+
+## 6. КОМПОЗИЦИЯ ПРОМПТОВ (Prompt Composition)
+
+### 6.1. Standard Generation System Prompt
+
+**Формула композиции:**
+```
+roadmap + generate.replace("FILE_FORMAT", file_format) + "\nUseful to know:\n" + philosophy
+```
+
+**Код:** `gpt_engineer/core/default/steps.py:89-94`
+
+**Используется в:**
+- Генерация нового кода (`gen_code`)
+- После фазы clarification (`clarified_gen`)
+
+---
+
+### 6.2. Code Improvement System Prompt
+
+**Формула композиции:**
+```
+roadmap + improve.replace("FILE_FORMAT", file_format_diff) + "\nUseful to know:\n" + philosophy
+```
+
+**Код:** `gpt_engineer/core/default/steps.py:113-118`
+
+**Используется в:**
+- Улучшение существующего кода (`improve_fn`)
+- Self-healing (`self_heal`)
+
+---
+
+### 6.3. Message Flow Examples
+
+#### Пример 1: Стандартная генерация
+
+```
+[SystemMessage]: roadmap + generate(with file_format) + philosophy
+[HumanMessage]: user's prompt
+[AIMessage]: generated code with files
+```
+
+#### Пример 2: Code Improvement
+
+```
+[SystemMessage]: roadmap + improve(with file_format_diff) + philosophy
+[HumanMessage]: existing files content
+[HumanMessage]: user's improvement request
+[AIMessage]: diffs to apply
+```
+
+#### Пример 3: Clarified Generation
+
+```
+[SystemMessage]: clarify
+[HumanMessage]: user's initial prompt
+[AIMessage]: clarification question
+[HumanMessage]: user's answer + continuation prompt
+[AIMessage]: "Nothing to clarify" or next question
+... (repeat until clear)
+[SystemMessage]: roadmap + generate(with file_format) + philosophy
+[HumanMessage]: (all previous clarification messages)
+[HumanMessage]: generate prompt
+[AIMessage]: generated code
+```
+
+---
+
+## 7. SUMMARY: ВСЕ ПРОМПТЫ ПО КАТЕГОРИЯМ
+
+### Статические Preprompts (9 файлов)
+1. **roadmap** - базовая установка ожиданий
+2. **generate** - генерация нового кода
+3. **improve** - улучшение существующего кода
+4. **file_format** - формат вывода для новых файлов
+5. **file_format_diff** - формат unified git diff
+6. **file_format_fix** - формат для исправления ошибок
+7. **philosophy** - стиль кодирования и best practices
+8. **clarify** - уточнение требований
+9. **entrypoint** - генерация скрипта запуска
+
+### Динамические промпты (5 типов)
+1. **Self-healing error prompt** - исправление ошибок выполнения
+2. **Diff refinement prompt** - исправление некорректных диффов
+3. **Assumption prompt** - когда пользователь пропускает вопросы
+4. **Continuation prompt** - продолжение диалога clarification
+5. **Default entrypoint prompt** - дефолтный запрос для entrypoint
+
+### Композитные промпты (2 основных)
+1. **Standard generation** = roadmap + generate(file_format) + philosophy
+2. **Code improvement** = roadmap + improve(file_format_diff) + philosophy
+
+---
+
+**Всего уникальных промптов: 16**
+- Статических: 9
+- Динамических: 5
+- Композитных: 2
+

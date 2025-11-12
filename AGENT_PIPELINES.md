@@ -230,3 +230,266 @@ python src/main.py
 6. **Default entrypoint user prompt** - "Make a unix script that installs dependencies..."
 
 ---
+
+## 2. CODE IMPROVEMENT PIPELINE
+
+**Описание:** Пайплайн для улучшения существующего кода. Использует формат unified git diff для внесения изменений. Включает цикл исправления некорректных диффов.
+
+**CLI Команда:**
+```bash
+gpt-engineer <project_path> --improve
+```
+
+**Файлы:**
+- `gpt_engineer/applications/cli/main.py:516` - точка входа для improve mode
+- `gpt_engineer/applications/cli/cli_agent.py:185` - метод `improve()`
+- `gpt_engineer/core/default/steps.py:271` - функция `improve_fn()`
+- `gpt_engineer/core/default/steps.py:315` - функция `_improve_loop()`
+- `gpt_engineer/core/default/steps.py:341` - функция `salvage_correct_hunks()`
+
+### ASCII Схема
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     FILE SELECTION PHASE                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────┐
+                    │  FileSelector            │
+                    │  Interactive selection   │
+                    │  of files to modify      │
+                    │  (or TOML file)          │
+                    └──────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────┐
+                    │  Optional: Linting       │
+                    │  Apply linter to files   │
+                    └──────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────┐
+                    │  files_dict_before       │
+                    │  {filename: old_code}    │
+                    └──────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    IMPROVEMENT REQUEST PHASE                        │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────┐
+                    │  Load Improvement Prompt │
+                    │  "How do you want to     │
+                    │   improve the app?"      │
+                    └──────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      AI IMPROVEMENT PHASE                           │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  improve_fn()                │
+                    │                              │
+                    │  Build message sequence:     │
+                    │                              │
+                    │  [1] SystemMessage:          │
+                    │      roadmap +               │
+                    │      improve(file_format_    │
+                    │        diff) + philosophy    │
+                    │                              │
+                    │  [2] HumanMessage:           │
+                    │      files_dict.to_chat()    │
+                    │      (all existing files)    │
+                    │                              │
+                    │  [3] HumanMessage:           │
+                    │      user improvement        │
+                    │      request                 │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  AI Response                 │
+                    │  (unified git diffs)         │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     DIFF VALIDATION LOOP                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  salvage_correct_hunks()     │
+                    │                              │
+                    │  1. Parse diffs with regex   │
+                    │  2. Validate each diff:      │
+                    │     - Check if new file or   │
+                    │       existing file          │
+                    │     - For existing: validate │
+                    │       hunk matches code      │
+                    │     - Correct line numbers   │
+                    │  3. Collect errors           │
+                    └──────────────────────────────┘
+                                  │
+                         ┌────────┴────────┐
+                         │                 │
+                   Errors found?      No errors
+                         │                 │
+                         YES               ▼
+                         │        ┌─────────────────┐
+                         │        │ Apply diffs     │
+                         │        │ Return files    │
+                         │        └─────────────────┘
+                         ▼
+            ┌────────────────────────────┐
+            │ Retry Loop                 │
+            │ (MAX_EDIT_REFINEMENT_      │
+            │  STEPS = 3)                │
+            │                            │
+            │ Add HumanMessage:          │
+            │ "Some diffs were not on    │
+            │  requested format or code  │
+            │  not found. Details:       │
+            │  {errors}                  │
+            │  Only rewrite problematic  │
+            │  diffs..."                 │
+            └────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────┐
+            │ AI next() call             │
+            │ Get corrected diffs        │
+            └────────────────────────────┘
+                         │
+                         │ Loop back to validation
+                         ▼
+            (Repeat until no errors or max retries)
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    REVIEW AND APPLY PHASE                           │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  compare()                   │
+                    │  Show colored diff to user   │
+                    │  (files_dict_before vs       │
+                    │   files_dict_after)          │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  User Confirmation           │
+                    │  "Apply these changes?"      │
+                    └──────────────────────────────┘
+                                  │
+                         ┌────────┴────────┐
+                         │                 │
+                    User YES          User NO
+                         │                 │
+                         ▼                 ▼
+            ┌─────────────────────┐ ┌──────────────┐
+            │ Apply changes       │ │ Discard      │
+            │ files_dict_after    │ │ Keep old     │
+            └─────────────────────┘ └──────────────┘
+```
+
+### Детальный поток данных
+
+#### Шаг 1: Подготовка системного промпта
+```python
+system_prompt = (
+    roadmap +  # "You will get instructions for code to write..."
+    improve.replace("FILE_FORMAT", file_format_diff) +  # Git diff instructions
+    "\nUseful to know:\n" +
+    philosophy  # Best practices
+)
+```
+
+#### Шаг 2: Формирование сообщений
+```python
+messages = [
+    SystemMessage(content=system_prompt),
+    HumanMessage(content=files_dict.to_chat()),  # All existing files
+    HumanMessage(content=user_improvement_prompt)
+]
+```
+
+Пример files_dict.to_chat():
+```
+src/main.py
+```
+def hello():
+    print("old version")
+```
+
+src/utils.py
+```
+def helper():
+    return 42
+```
+```
+
+#### Шаг 3: AI возвращает диффы
+```diff
+--- src/main.py
++++ src/main.py
+@@ -1,2 +1,3 @@
+ def hello():
+-    print("old version")
++    print("new version")
++    print("with improvements")
+```
+
+#### Шаг 4: Валидация диффов
+```python
+# Parse diff
+diff = parse_diffs(ai_response)
+
+# Validate hunks
+for diff in diffs:
+    if not diff.is_new_file():
+        problems = diff.validate_and_correct(
+            file_to_lines_dict(files_dict[diff.filename_pre])
+        )
+        
+        # Problems might be:
+        # - "Line 'old version' not found at expected position"
+        # - "Hunk context doesn't match"
+```
+
+#### Шаг 5: Retry loop (если есть ошибки)
+```python
+retries = 0
+while errors and retries < MAX_EDIT_REFINEMENT_STEPS:
+    messages.append(HumanMessage(
+        content="Some diffs were not on requested format...\n"
+        + "\n".join(errors) + "\n Only rewrite problematic diffs..."
+    ))
+    messages = ai.next(messages)
+    files_dict, errors = salvage_correct_hunks(messages, files_dict)
+    retries += 1
+```
+
+### Используемые промпты
+
+1. **roadmap** - базовая инструкция
+2. **improve** - инструкции для модификации через git diff
+3. **file_format_diff** - детальные правила unified diff
+4. **philosophy** - стиль кодирования
+5. **Diff refinement error prompt** (динамический) - исправление некорректных диффов
+
+### Ключевые особенности
+
+1. **Diff Validation**: Строгая валидация каждого hunk перед применением
+2. **Error Recovery**: До 3 попыток исправить некорректные диффы
+3. **Line Number Correction**: Автоматическая корректировка номеров строк
+4. **User Review**: Показ изменений и запрос подтверждения
+
+---

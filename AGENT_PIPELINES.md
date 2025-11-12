@@ -1046,3 +1046,488 @@ Success: * Running on http://127.0.0.1:8000/
 - Не обрабатывает бесконечные циклы в коде (нужен timeout)
 
 ---
+
+## 5. LITE GENERATION PIPELINE
+
+**Описание:** Упрощенный пайплайн генерации без roadmap и philosophy. Использует только пользовательский промпт и file_format инструкции. Подходит для простых задач или быстрого прототипирования.
+
+**CLI Команда:**
+```bash
+gpt-engineer <project_path> --lite
+```
+
+**Файлы:**
+- `gpt_engineer/tools/custom_steps.py:198` - функция `lite_gen()`
+
+### ASCII Схема
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    LITE GENERATION PHASE                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Load User Prompt            │
+                    │  (from file or stdin)        │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Build Messages:             │
+                    │                              │
+                    │  INVERTED STRUCTURE:         │
+                    │                              │
+                    │  System Message:             │
+                    │    user_prompt               │
+                    │    (NOT preprompts!)         │
+                    │                              │
+                    │  User Message:               │
+                    │    file_format preprompt     │
+                    │                              │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  ai.start(                   │
+                    │    system=user_prompt,       │
+                    │    user=file_format          │
+                    │  )                           │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  AI Response                 │
+                    │  (generated code files)      │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  chat_to_files_dict()        │
+                    │  Parse FILENAME + ```        │
+                    │  code blocks                 │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Return FilesDict            │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    (Continue with standard flow:
+                     gen_entrypoint -> execute_entrypoint)
+```
+
+### Детальный поток данных
+
+#### Инвертированная структура промптов
+```python
+# ОБРАТИТЕ ВНИМАНИЕ: это инвертированная структура!
+messages = ai.start(
+    prompt.to_langchain_content(),  # User prompt as SYSTEM message
+    preprompts["file_format"],      # file_format as USER message
+    step_name="lite_gen"
+)
+```
+
+**Стандартный режим:**
+```
+System: roadmap + generate + philosophy
+User: user's request
+```
+
+**Lite режим:**
+```
+System: user's request
+User: file_format instructions
+```
+
+#### Пример использования
+
+**User Prompt:**
+```
+Create a simple TODO list web app using Flask
+```
+
+**Фактические сообщения в AI:**
+```python
+[
+    SystemMessage(content="Create a simple TODO list web app using Flask"),
+    HumanMessage(content="""You will output the content of each file necessary to achieve the goal, including ALL code.
+Represent files like so:
+
+FILENAME
+```
+CODE
+```
+
+The following tokens must be replaced like so:
+FILENAME is the lowercase combined path and file name including the file extension
+CODE is the code in the file
+
+Example representation of a file:
+
+src/hello_world.py
+```
+print("Hello World")
+```
+
+Do not comment on what every file does. Please note that the code should be fully functional. No placeholders.""")
+]
+```
+
+#### AI Response
+```
+app.py
+```python
+from flask import Flask, render_template, request, redirect
+import sqlite3
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    conn = sqlite3.connect('todos.db')
+    c = conn.cursor()
+    c.execute('SELECT * FROM todos')
+    todos = c.fetchall()
+    conn.close()
+    return render_template('index.html', todos=todos)
+    
+# ... more code ...
+```
+
+templates/index.html
+```html
+<!DOCTYPE html>
+<html>
+<head><title>TODO List</title></head>
+<body>
+    <!-- ... HTML ... -->
+</body>
+</html>
+```
+
+requirements.txt
+```
+flask==2.0.0
+```
+```
+
+### Используемые промпты
+
+1. **file_format** - единственный preprompt (как user message)
+2. **User's prompt** - используется как system message (!)
+3. **entrypoint** - для последующей генерации run.sh (если продолжается стандартный flow)
+
+### Ключевые особенности
+
+1. **Minimal Overhead**: Минимум промптов, быстрая генерация
+2. **Inverted Structure**: Уникальная инвертированная структура сообщений
+3. **No Best Practices**: Не включает philosophy и roadmap
+4. **Simple Tasks**: Лучше всего подходит для простых задач
+5. **Same Output Format**: Использует тот же file_format что и стандартный режим
+
+### Отличия от стандартной генерации
+
+| Аспект | Standard Generation | Lite Generation |
+|--------|---------------------|-----------------|
+| System Message | roadmap + generate + philosophy | user's prompt |
+| User Message | user's request | file_format |
+| Complexity | Высокая | Низкая |
+| Best Practices | Включены (philosophy) | Не включены |
+| Detailed Instructions | Да (generate) | Нет |
+| Use Case | Сложные проекты | Простые задачи |
+
+### Когда использовать lite mode
+
+✅ **Хорошо для:**
+- Простых скриптов
+- Быстрого прототипирования
+- Одиночных файлов
+- Экспериментов
+
+❌ **Не подходит для:**
+- Больших проектов
+- Когда важна архитектура
+- Когда нужны best practices
+- Production-ready кода
+
+---
+
+## 6. COMPLETE AGENT FLOW
+
+**Описание:** Общая схема работы CLI агента, показывающая как все пайплайны интегрируются в единую систему.
+
+### Общая архитектура
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         CLI ENTRY POINT                             │
+│                    gpt_engineer/applications/cli/main.py            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Parse Arguments             │
+                    │  - project_path              │
+                    │  - model                     │
+                    │  - temperature               │
+                    │  - improve / clarify /       │
+                    │    lite / self-heal flags    │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Load Environment            │
+                    │  - OPENAI_API_KEY            │
+                    │  - ANTHROPIC_API_KEY         │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Initialize Components       │
+                    │  - AI (model + temperature)  │
+                    │  - Memory (DiskMemory)       │
+                    │  - ExecutionEnv              │
+                    │  - PrepromptsHolder          │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Select Generation Function  │
+                    └──────────────────────────────┘
+                                  │
+         ┌────────────────────────┼────────────────────────┐
+         │                        │                        │
+         ▼                        ▼                        ▼
+    clarify_mode?           lite_mode?              (default)
+         │                        │                        │
+         ▼                        ▼                        ▼
+    clarified_gen()          lite_gen()              gen_code()
+                                  │
+                                  └────────┬───────────────┘
+                                           │
+                                           ▼
+                    ┌──────────────────────────────┐
+                    │  Select Execution Function   │
+                    └──────────────────────────────┘
+                                  │
+                         ┌────────┴────────┐
+                         │                 │
+                  self_heal_mode?      (default)
+                         │                 │
+                         ▼                 ▼
+                  self_heal()      execute_entrypoint()
+                                           │
+                                           └────────┬──────┘
+                                                    │
+                                                    ▼
+                    ┌──────────────────────────────────────┐
+                    │  Create CliAgent                     │
+                    │  agent = CliAgent.with_default_      │
+                    │           config(                    │
+                    │    memory,                           │
+                    │    execution_env,                    │
+                    │    ai,                               │
+                    │    code_gen_fn=selected_gen_fn,      │
+                    │    improve_fn=improve_fn,            │
+                    │    process_code_fn=selected_exec_fn, │
+                    │    preprompts_holder                 │
+                    │  )                                   │
+                    └──────────────────────────────────────┘
+                                                    │
+                                                    ▼
+                              ┌─────────────────────────────┐
+                              │  Mode Selection             │
+                              └─────────────────────────────┘
+                                                    │
+                         ┌──────────────────────────┴──────────────────┐
+                         │                                             │
+                         ▼                                             ▼
+            ┌────────────────────────┐                    ┌────────────────────────┐
+            │  IMPROVE MODE          │                    │  GENERATION MODE       │
+            │  (--improve flag)      │                    │  (default)             │
+            └────────────────────────┘                    └────────────────────────┘
+                         │                                             │
+                         ▼                                             ▼
+            ┌────────────────────────────┐               ┌────────────────────────┐
+            │  FileSelector.ask_for_     │               │  agent.init(prompt)    │
+            │    files()                 │               │                        │
+            │  User selects files to     │               │  1. code_gen_fn()      │
+            │  modify (interactive or    │               │  2. gen_entrypoint()   │
+            │  from TOML)                │               │  3. process_code_fn()  │
+            └────────────────────────────┘               └────────────────────────┘
+                         │                                             │
+                         ▼                                             │
+            ┌────────────────────────────┐                            │
+            │  Optional: Linting         │                            │
+            │  files.linting()           │                            │
+            └────────────────────────────┘                            │
+                         │                                             │
+                         ▼                                             │
+            ┌────────────────────────────┐                            │
+            │  handle_improve_mode()     │                            │
+            │  agent.improve()           │                            │
+            │  - improve_fn with diffs   │                            │
+            │  - validation loop         │                            │
+            └────────────────────────────┘                            │
+                         │                                             │
+                         ▼                                             │
+            ┌────────────────────────────┐                            │
+            │  compare()                 │                            │
+            │  Show colored diff         │                            │
+            └────────────────────────────┘                            │
+                         │                                             │
+                         ▼                                             │
+            ┌────────────────────────────┐                            │
+            │  User Confirmation         │                            │
+            │  "Apply changes?"          │                            │
+            └────────────────────────────┘                            │
+                         │                                             │
+                         └──────────────────┬──────────────────────────┘
+                                            │
+                                            ▼
+                         ┌──────────────────────────────────┐
+                         │  stage_uncommitted_to_git()      │
+                         │  Stage changes in git            │
+                         └──────────────────────────────────┘
+                                            │
+                                            ▼
+                         ┌──────────────────────────────────┐
+                         │  files.push(files_dict)          │
+                         │  Write files to disk             │
+                         └──────────────────────────────────┘
+                                            │
+                                            ▼
+                         ┌──────────────────────────────────┐
+                         │  Display Token Usage / Cost      │
+                         └──────────────────────────────────┘
+```
+
+### Матрица режимов работы
+
+| Флаги | code_gen_fn | process_code_fn | Поведение |
+|-------|-------------|-----------------|-----------|
+| (none) | gen_code | execute_entrypoint | Стандартная генерация с подтверждением выполнения |
+| --clarify | clarified_gen | execute_entrypoint | Интерактивное уточнение → генерация → выполнение |
+| --lite | lite_gen | execute_entrypoint | Упрощенная генерация → выполнение |
+| --self-heal | gen_code | self_heal | Генерация → автоматические попытки исправления |
+| --improve | N/A | N/A | Другой flow через agent.improve() |
+| --clarify --self-heal | clarified_gen | self_heal | Уточнение → генерация → автоисправление |
+| --lite --self-heal | lite_gen | self_heal | Упрощенная генерация → автоисправление |
+
+### Ключевые компоненты системы
+
+#### 1. CliAgent
+Центральный оркестратор, управляющий жизненным циклом:
+```python
+class CliAgent:
+    def init(self, prompt) -> FilesDict:
+        # Generation mode
+        files_dict = self.code_gen_fn(...)
+        entrypoint = gen_entrypoint(...)
+        files_dict = self.process_code_fn(...)
+        return files_dict
+    
+    def improve(self, files_dict, prompt) -> FilesDict:
+        # Improvement mode
+        files_dict = self.improve_fn(...)
+        return files_dict
+```
+
+#### 2. AI
+Абстракция над LLM API:
+```python
+class AI:
+    def start(self, system, user, step_name)
+    def next(self, messages, user_input, step_name)
+    # Handles token counting, caching, vision support
+```
+
+#### 3. Memory (DiskMemory)
+Persistent storage:
+```python
+class DiskMemory:
+    def get(self, filename) -> str
+    def set(self, filename, content)
+    def log(self, log_file, content)
+```
+
+Logs:
+- `code_gen_log_file.txt` - полный лог генерации
+- `improve_log_file.txt` - лог улучшений
+- `entrypoint_log_file.txt` - лог создания entrypoint
+- `diff_log_file.txt` - ошибки валидации диффов
+- `debug_log_file.txt` - отладочная информация
+
+#### 4. ExecutionEnv (DiskExecutionEnv)
+Среда выполнения:
+```python
+class DiskExecutionEnv:
+    def upload(self, files_dict)
+    def popen(self, command) -> subprocess.Popen
+    def run(self, command)
+```
+
+#### 5. PrepromptsHolder
+Менеджер preprompts:
+```python
+class PrepromptsHolder:
+    def get_preprompts(self) -> Dict[str, str]
+    # Loads all preprompts from disk
+```
+
+### Поток данных через систему
+
+```
+User Input (prompt)
+    ↓
+PrepromptsHolder (loads preprompts)
+    ↓
+AI (combines prompts + calls LLM)
+    ↓
+chat_to_files_dict / parse_diffs (parsing)
+    ↓
+FilesDict (in-memory representation)
+    ↓
+Memory.log (logging)
+    ↓
+ExecutionEnv.upload (write to disk)
+    ↓
+ExecutionEnv.run (execute)
+    ↓
+stdout/stderr
+    ↓
+(if errors and self-heal → back to AI)
+```
+
+### Точки расширения
+
+1. **Custom Preprompts**: `--use-custom-preprompts`
+2. **Custom Code Gen Function**: Передать свою функцию в CliAgent
+3. **Custom Execution Env**: Реализовать BaseExecutionEnv (например, Docker)
+4. **Custom Memory**: Реализовать BaseMemory (например, S3)
+5. **Custom AI**: Реализовать AI интерфейс (например, для локальных моделей)
+
+---
+
+## ЗАКЛЮЧЕНИЕ
+
+Система gpt-engineer построена на модульной архитектуре с четко разделенными ответственностями:
+
+1. **Пайплайны генерации** (5 режимов):
+   - Standard: полная генерация с best practices
+   - Clarified: с интерактивным уточнением
+   - Lite: упрощенная версия
+   - Self-Healing: с автоисправлением
+   - Improvement: модификация существующего кода
+
+2. **Композиция промптов**: Гибкая система комбинирования preprompts
+
+3. **Валидация и исправление**: Автоматическая проверка диффов и retry логика
+
+4. **Расширяемость**: Множество точек для кастомизации
+
+**Всего в системе: 5 основных пайплайнов + 1 improvement flow**
+

@@ -759,3 +759,290 @@ messages = ai.next(
 5. **Smooth Transition**: Плавный переход от clarification к generation
 
 ---
+
+## 4. SELF-HEALING PIPELINE
+
+**Описание:** Автоматический пайплайн исправления ошибок выполнения. После генерации кода система выполняет его, и если возникают ошибки, автоматически отправляет их в AI для исправления. Процесс повторяется до успешного выполнения или достижения лимита попыток.
+
+**CLI Команда:**
+```bash
+gpt-engineer <project_path> --self-heal
+```
+
+**Файлы:**
+- `gpt_engineer/tools/custom_steps.py:40` - функция `self_heal()`
+- `gpt_engineer/core/default/steps.py:271` - использует `improve_fn()` для исправлений
+
+### ASCII Схема
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    INITIAL CODE GENERATION                          │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    (Standard generation pipeline:
+                     gen_code -> gen_entrypoint)
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  FilesDict with run.sh       │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SELF-HEALING LOOP                                │
+│                    (MAX_SELF_HEAL_ATTEMPTS = 10)                    │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Check: run.sh exists?       │
+                    └──────────────────────────────┘
+                                  │
+                         ┌────────┴────────┐
+                         │                 │
+                      YES               NO
+                         │                 │
+                         ▼                 ▼
+                    Continue      ┌──────────────────┐
+                                  │ Raise            │
+                                  │ FileNotFoundError│
+                                  └──────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────┐
+            │ Attempt Counter = 0        │
+            └────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────────────┐
+            │ EXECUTION ATTEMPT                  │
+            └────────────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────────────┐
+            │ execution_env.upload(files_dict)   │
+            │ Upload all files to exec env       │
+            └────────────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────────────┐
+            │ p = execution_env.popen(run.sh)    │
+            │ Start process                      │
+            └────────────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────────────┐
+            │ stdout, stderr = p.communicate()   │
+            │ Wait for completion                │
+            └────────────────────────────────────┘
+                         │
+                         ▼
+            ┌────────────────────────────────────┐
+            │ Check Return Code                  │
+            └────────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         │                               │
+    returncode == 0          returncode != 0
+    or returncode == 2       and != 2
+         │                               │
+         ▼                               ▼
+    ┌──────────┐         ┌────────────────────────────┐
+    │ SUCCESS  │         │ FAILURE - Need to fix      │
+    │ Exit     │         │                            │
+    │ loop     │         │ Print stdout/stderr        │
+    └──────────┘         └────────────────────────────┘
+                                        │
+                                        ▼
+                         ┌────────────────────────────────────┐
+                         │ Build Error Prompt:                │
+                         │                                    │
+                         │ "A program with this               │
+                         │  specification was requested:      │
+                         │  {original_prompt}                 │
+                         │                                    │
+                         │  but running it produced the       │
+                         │  following output:                 │
+                         │  {stdout}                          │
+                         │                                    │
+                         │  and the following errors:         │
+                         │  {stderr}                          │
+                         │                                    │
+                         │  Please change it so that it       │
+                         │  fulfills the requirements."       │
+                         └────────────────────────────────────┘
+                                        │
+                                        ▼
+                         ┌────────────────────────────────────┐
+                         │ improve_fn()                       │
+                         │                                    │
+                         │ Uses improvement pipeline with     │
+                         │ error prompt to fix code           │
+                         │                                    │
+                         │ System: roadmap + improve +        │
+                         │         philosophy                 │
+                         │ User 1: files_dict.to_chat()       │
+                         │ User 2: error prompt               │
+                         └────────────────────────────────────┘
+                                        │
+                                        ▼
+                         ┌────────────────────────────────────┐
+                         │ AI generates diffs to fix errors   │
+                         │ Apply diffs to files_dict          │
+                         └────────────────────────────────────┘
+                                        │
+                                        ▼
+                         ┌────────────────────────────────────┐
+                         │ Increment attempts counter         │
+                         └────────────────────────────────────┘
+                                        │
+                         ┌──────────────┴──────────────┐
+                         │                             │
+                  attempts < 10                 attempts >= 10
+                         │                             │
+                         │                             ▼
+                         │              ┌────────────────────────┐
+                         │              │ Give up                │
+                         │              │ Return current         │
+                         │              │ files_dict (broken)    │
+                         │              └────────────────────────┘
+                         │
+                         │ Loop back to execution
+                         ▼
+            (Try executing fixed code again)
+```
+
+### Детальный поток данных
+
+#### Шаг 1: Первоначальная генерация
+```python
+# Standard generation happens first
+files_dict = gen_code(ai, prompt, memory, preprompts_holder)
+entrypoint = gen_entrypoint(ai, prompt, files_dict, memory, preprompts_holder)
+files_dict = {**files_dict, **entrypoint}
+```
+
+#### Шаг 2: Первая попытка выполнения
+```python
+attempts = 0
+while attempts < MAX_SELF_HEAL_ATTEMPTS:
+    attempts += 1
+    
+    # Upload and execute
+    execution_env.upload(files_dict)
+    p = execution_env.popen(files_dict[ENTRYPOINT_FILE])
+    stdout_full, stderr_full = p.communicate()
+    
+    # Check result
+    if (p.returncode != 0 and p.returncode != 2):
+        # FAILURE - need to fix
+        ...
+    else:
+        # SUCCESS
+        break
+```
+
+#### Шаг 3: Построение error prompt (при ошибке)
+```python
+error_prompt = Prompt(
+    f"A program with this specification was requested:\n{original_prompt}\n"
+    f", but running it produced the following output:\n{stdout_full}\n"
+    f" and the following errors:\n{stderr_full}."
+    f" Please change it so that it fulfills the requirements."
+)
+```
+
+**Пример error prompt:**
+```
+A program with this specification was requested:
+Create a Flask web server on port 8000
+
+but running it produced the following output:
+Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    from flask import Flask
+ModuleNotFoundError: No module named 'flask'
+
+and the following errors:
+
+
+Please change it so that it fulfills the requirements.
+```
+
+#### Шаг 4: Вызов improve_fn для исправления
+```python
+files_dict = improve_fn(
+    ai,
+    error_prompt,  # Error description as prompt
+    files_dict,    # Current (broken) code
+    memory,
+    preprompts_holder,
+    diff_timeout
+)
+```
+
+AI получает:
+- System: roadmap + improve(file_format_diff) + philosophy
+- User 1: весь текущий код
+- User 2: описание ошибки с просьбой исправить
+
+AI возвращает диффы, например:
+```diff
+--- requirements.txt
++++ requirements.txt
+@@ -0,0 +1 @@
++flask==2.0.0
+```
+
+#### Шаг 5: Повторная попытка
+Обновленный код снова выполняется, цикл продолжается до успеха или лимита попыток.
+
+### Пример полного цикла
+
+**Attempt 1:**
+```
+Run: python main.py
+Error: ModuleNotFoundError: No module named 'flask'
+→ AI adds flask to requirements.txt
+```
+
+**Attempt 2:**
+```
+Run: pip install -r requirements.txt && python main.py
+Error: TypeError: Flask() missing required argument 'import_name'
+→ AI fixes Flask initialization: Flask(__name__)
+```
+
+**Attempt 3:**
+```
+Run: pip install -r requirements.txt && python main.py
+Success: * Running on http://127.0.0.1:8000/
+→ Exit loop
+```
+
+### Используемые промпты
+
+1. **roadmap** - через improve_fn
+2. **improve** - для создания исправлений
+3. **file_format_diff** - формат диффов
+4. **philosophy** - стиль кодирования
+5. **Self-healing error prompt** (динамический) - описание ошибки выполнения
+
+### Ключевые особенности
+
+1. **Automatic Error Recovery**: Полностью автоматическое исправление без участия пользователя
+2. **Multiple Attempts**: До 10 попыток исправить код
+3. **Full Context**: AI получает полный stdout и stderr для анализа
+4. **Uses Improvement Pipeline**: Переиспользует механизм улучшения кода
+5. **Iterative Fixing**: Каждая итерация строится на результатах предыдущей
+
+### Ограничения
+
+- Лимит 10 попыток (MAX_SELF_HEAL_ATTEMPTS)
+- Не гарантирует успех для сложных ошибок
+- Может зациклиться на одной и той же ошибке
+- Не обрабатывает бесконечные циклы в коде (нужен timeout)
+
+---

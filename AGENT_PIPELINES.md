@@ -493,3 +493,269 @@ while errors and retries < MAX_EDIT_REFINEMENT_STEPS:
 4. **User Review**: Показ изменений и запрос подтверждения
 
 ---
+
+## 3. CLARIFIED GENERATION PIPELINE
+
+**Описание:** Интерактивный пайплайн с фазой уточнения требований перед генерацией кода. AI задает уточняющие вопросы пользователю, чтобы лучше понять задачу.
+
+**CLI Команда:**
+```bash
+gpt-engineer <project_path> --clarify
+```
+
+**Файлы:**
+- `gpt_engineer/tools/custom_steps.py:122` - функция `clarified_gen()`
+- `gpt_engineer/core/default/steps.py:121` - используется `gen_code()` после clarification
+
+### ASCII Схема
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CLARIFICATION PHASE                              │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Load User Prompt            │
+                    │  (initial request)           │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Build Initial Messages:     │
+                    │                              │
+                    │  [SystemMessage]:            │
+                    │    clarify preprompt         │
+                    │                              │
+                    │  [HumanMessage]:             │
+                    │    user's initial prompt     │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                  INTERACTIVE CLARIFICATION LOOP                     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  ai.next(messages)           │
+                    │  AI analyzes prompt          │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  AI Response                 │
+                    └──────────────────────────────┘
+                                  │
+                         ┌────────┴─────────┐
+                         │                  │
+            Contains "nothing to      Has clarifying
+            clarify" (case-insens)    question
+                         │                  │
+                         ▼                  ▼
+            ┌─────────────────┐   ┌────────────────────┐
+            │ Exit loop       │   │ Show question to   │
+            │ Proceed to      │   │ user               │
+            │ generation      │   │                    │
+            └─────────────────┘   │ Prompt: "(answer   │
+                                  │  in text, or 'c'   │
+                                  │  to move on)"      │
+                                  └────────────────────┘
+                                           │
+                                           ▼
+                              ┌────────────────────────┐
+                              │ User Input             │
+                              └────────────────────────┘
+                                           │
+                              ┌────────────┴────────────┐
+                              │                         │
+                         User enters         User presses Enter
+                         answer              or types "c"
+                              │                         │
+                              │                         ▼
+                              │            ┌──────────────────────┐
+                              │            │ Add to messages:     │
+                              │            │ "Make your own       │
+                              │            │  assumptions and     │
+                              │            │  state them          │
+                              │            │  explicitly"         │
+                              │            └──────────────────────┘
+                              │                         │
+                              ▼                         ▼
+                    ┌───────────────────────────────────────┐
+                    │ Add user input to messages:           │
+                    │ [HumanMessage]:                       │
+                    │   user_input + "\n\n                  │
+                    │   Is anything else unclear?           │
+                    │   If yes, ask another question.\n     │
+                    │   Otherwise state:                    │
+                    │   'Nothing to clarify'"               │
+                    └───────────────────────────────────────┘
+                                           │
+                                           │ Loop back
+                                           ▼
+                              (Repeat until "nothing to clarify")
+                                           │
+                                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CODE GENERATION PHASE                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Transform Messages:         │
+                    │                              │
+                    │  [1] Replace first system    │
+                    │      message (clarify) with: │
+                    │      roadmap +               │
+                    │      generate(file_format) + │
+                    │      philosophy              │
+                    │                              │
+                    │  [2] Keep all clarification  │
+                    │      dialog messages         │
+                    │      (questions & answers)   │
+                    │                              │
+                    │  [3] Add final message:      │
+                    │      generate prompt with    │
+                    │      file_format             │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  ai.next(messages)           │
+                    │  Generate code               │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  AI Response                 │
+                    │  (generated code files)      │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  chat_to_files_dict()        │
+                    │  Parse and extract files     │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │  Return FilesDict            │
+                    └──────────────────────────────┘
+                                  │
+                                  ▼
+                    (Continue with standard generation:
+                     gen_entrypoint -> execute_entrypoint)
+```
+
+### Детальный поток данных
+
+#### Фаза 1: Начальная clarification
+```python
+messages = [
+    SystemMessage(content=preprompts["clarify"]),
+    # clarify: "Given some instructions, determine if anything 
+    #          needs to be clarified..."
+]
+
+messages = ai.next(messages, user_input=user_prompt)
+```
+
+#### Фаза 2: Интерактивный диалог
+```python
+while True:
+    ai_response = messages[-1].content.strip()
+    
+    # Exit condition
+    if "nothing to clarify" in ai_response.lower():
+        break
+    
+    # Show question and get user input
+    user_input = input("(answer in text, or 'c' to move on)\n")
+    
+    # Handle skip
+    if not user_input or user_input == "c":
+        messages = ai.next(
+            messages,
+            "Make your own assumptions and state them explicitly"
+        )
+        continue
+    
+    # Add continuation prompt
+    user_input += """
+        \n\n
+        Is anything else unclear? If yes, ask another question.\n
+        Otherwise state: "Nothing to clarify"
+        """
+    
+    messages = ai.next(messages, user_input)
+```
+
+**Пример диалога:**
+
+```
+User: Create a snake game in Python
+
+AI: What control scheme would you like?
+    - Arrow keys
+    - WASD
+    - Mouse
+    
+User: Arrow keys
+
+AI: Should the snake wrap around the edges or die when hitting walls?
+
+User: Die when hitting walls
+
+AI: Nothing to clarify.
+```
+
+#### Фаза 3: Трансформация в generation
+```python
+# Replace system message
+messages = [
+    SystemMessage(content=setup_sys_prompt(preprompts))
+    # = roadmap + generate(file_format) + philosophy
+] + messages[1:]  # Keep all clarification dialog
+
+# Add final generation prompt
+messages = ai.next(
+    messages,
+    preprompts["generate"].replace("FILE_FORMAT", preprompts["file_format"])
+)
+```
+
+**Финальная структура сообщений:**
+```python
+[
+    SystemMessage: roadmap + generate + philosophy
+    HumanMessage: "Create a snake game in Python"
+    AIMessage: "What control scheme..."
+    HumanMessage: "Arrow keys\n\nIs anything else unclear?..."
+    AIMessage: "Should the snake wrap..."
+    HumanMessage: "Die when hitting walls\n\nIs anything else unclear?..."
+    AIMessage: "Nothing to clarify"
+    HumanMessage: generate prompt with file_format
+    AIMessage: <generated code>
+]
+```
+
+### Используемые промпты
+
+1. **clarify** - начальная инструкция для уточнения
+2. **Assumption prompt** (динамический) - "Make your own assumptions..."
+3. **Continuation prompt** (динамический) - "Is anything else unclear?..."
+4. **roadmap** - для финальной генерации
+5. **generate** - для финальной генерации
+6. **file_format** - для финальной генерации
+7. **philosophy** - для финальной генерации
+
+### Ключевые особенности
+
+1. **Interactive Dialog**: Многоуровневый диалог с пользователем
+2. **Context Preservation**: Весь диалог сохраняется для финальной генерации
+3. **Skip Option**: Пользователь может пропустить вопросы (c/Enter)
+4. **Automatic Assumptions**: AI делает предположения при пропуске
+5. **Smooth Transition**: Плавный переход от clarification к generation
+
+---

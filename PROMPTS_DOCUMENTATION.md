@@ -298,3 +298,71 @@ Python toolbelt preferences:
 ```
 
 ---
+
+## 4. ПРОМПТЫ УТОЧНЕНИЯ И ТОЧКИ ВХОДА (Clarification & Entrypoint Prompts)
+
+### 4.1. Clarify Prompt
+
+**Расположение:** `gpt_engineer/preprompts/clarify`
+
+**Назначение:** Управляет фазой уточнения требований перед началом генерации кода. AI задает уточняющие вопросы о неясных аспектах задачи или подтверждает, что всё понятно.
+
+**Используется в:**
+- `clarified_gen()` - основная функция с фазой уточнения
+- Создает интерактивный диалог с пользователем
+
+**Особенности:**
+- Краткий и прямой промпт
+- AI должен задать ОДИН уточняющий вопрос или заявить "Nothing to clarify"
+- Может делать разумные предположения
+- Циклически работает до полного понимания задачи
+
+**Логика работы:**
+1. AI получает пользовательский запрос
+2. Если что-то неясно - задает ОДИН вопрос
+3. Если всё ясно - пишет "Nothing to clarify"
+4. Цикл продолжается до явного подтверждения
+
+**Промпт:**
+```
+Given some instructions, determine if anything needs to be clarified, do not carry them out.
+You can make reasonable assumptions, but if you are unsure, ask a single clarification question.
+Otherwise state: "Nothing to clarify"
+```
+
+---
+
+### 4.2. Entrypoint Prompt
+
+**Расположение:** `gpt_engineer/preprompts/entrypoint`
+
+**Назначение:** Инструктирует AI создать скрипт для запуска сгенерированного кода. Скрипт должен устанавливать зависимости и запускать все необходимые части кода.
+
+**Используется в:**
+- `gen_entrypoint()` - генерация исполняемого скрипта
+- Создается файл `run.sh` для запуска проекта
+
+**Особенности:**
+- Строгое требование: не использовать sudo и глобальные установки
+- Только команды, без объяснений
+- Использует примерные значения вместо placeholders
+- Формат вывода: только code blocks с командами терминала
+
+**Дефолтный пользовательский промпт (если не указан явно):**
+```
+Make a unix script that
+a) installs dependencies
+b) runs all necessary parts of the codebase (in parallel if necessary)
+```
+
+**Промпт:**
+```
+You will get information about a codebase that is currently on disk in the current folder.
+The user will ask you to write a script that runs the code in a specific way.
+You will answer with code blocks that include all the necessary terminal commands.
+Do not install globally. Do not use sudo.
+Do not explain the code, just give the commands.
+Do not use placeholders, use example values (like . for a folder argument) if necessary.
+```
+
+---
